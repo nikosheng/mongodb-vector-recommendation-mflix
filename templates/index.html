@@ -1,0 +1,331 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>StreamFlix — Churn Mitigation Demo</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="stylesheet" href="/static/css/style.css" />
+  <script>
+    window.DEMO_CONFIG = {
+      apiBase:            "{{ api_base }}",
+      defaultUser:        "{{ default_user }}",
+      demoUsers:          "{{ demo_users }}",
+      negativeThreshold:  {{ negative_threshold }},
+      genreSkipThreshold: {{ genre_skip_threshold }},
+      rejectionStrength:  {{ rejection_strength }},
+      alpha:              {{ alpha }},
+      beta:               {{ beta }},
+      betaMaxMultiplier:  {{ beta_max_multiplier }},
+      playRowThreshold:   {{ play_row_threshold }},
+      driftRate:          {{ drift_rate }},
+      genreBlendLambda:   {{ genre_blend_lambda }},
+      genreRowsCount:     {{ genre_rows_count }},
+      maxBoostedSlots:    {{ max_boosted_slots }},
+    };
+  </script>
+</head>
+<body class="bg-[#141414] text-white">
+
+<!-- ============================================================
+     TOAST BANNER
+     ============================================================ -->
+<div id="toast-banner" class="toast-banner" role="alert" aria-live="assertive">
+  <div class="toast-icon">🔄</div>
+  <div class="toast-text" id="toast-msg">Feed has been dynamically shifted.</div>
+  <button id="toast-close" class="toast-close" aria-label="Dismiss">&times;</button>
+</div>
+
+<!-- ============================================================
+     NAV BAR
+     ============================================================ -->
+<nav class="nav-bar">
+  <a href="/" class="nav-logo">STREAMFLIX</a>
+
+  <div class="hidden md:flex items-center gap-6 text-sm text-gray-400 font-medium">
+    <span class="text-white">Home</span>
+    <span>Movies</span>
+    <span>New &amp; Popular</span>
+  </div>
+
+  <div class="nav-right">
+    <!-- Persona switcher — pills populated by initPersonaSwitcher() in app.js -->
+    <div id="persona-switcher" class="persona-switcher" aria-label="Switch demo persona"></div>
+    <button id="btn-reset" class="btn-reset" title="Reset all personas and restart demo">↺ Reset Demo</button>
+    <button id="btn-admin" class="btn-admin" title="Marketing admin panel (Alt+A)">⚡ Admin</button>
+    <a href="/api/docs" target="_blank" class="hidden lg:inline text-xs text-gray-600 hover:text-gray-400 transition-colors">API ↗</a>
+  </div>
+</nav>
+
+<!-- ============================================================
+     HERO BANNER
+     ============================================================ -->
+<section class="hero-banner" aria-label="Featured movie">
+  <div id="hero-bg" class="hero-banner" style="background-image:url('');"></div>
+  <div class="hero-gradient"></div>
+  <div class="hero-content">
+    <div id="hero-score" class="text-sm font-semibold text-green-400 mb-2 tracking-wide"></div>
+    <h1 id="hero-title" class="text-4xl md:text-5xl font-extrabold leading-tight mb-3 tracking-tight">Loading…</h1>
+    <div id="hero-genres" class="flex flex-wrap gap-1 mb-4"></div>
+    <p id="hero-plot" class="text-gray-300 text-sm md:text-base leading-relaxed mb-6 max-w-lg line-clamp-3"></p>
+    <div class="flex gap-3 flex-wrap">
+      <button id="hero-btn-play"
+        class="flex items-center gap-2 bg-white text-black font-bold px-8 py-3 rounded-md text-sm hover:bg-gray-200 transition-colors">
+        ▶&nbsp;Play
+      </button>
+      <button id="hero-btn-skip"
+        class="flex items-center gap-2 bg-gray-700/70 text-white font-semibold px-6 py-3 rounded-md text-sm border border-gray-500/40 hover:bg-gray-600/70 transition-colors">
+        ⏭&nbsp;Not Interested
+      </button>
+    </div>
+  </div>
+</section>
+
+<!-- ============================================================
+     HUD + MAIN CONTENT WRAPPER
+     ============================================================ -->
+<div style="position:relative;">
+
+  <!-- ── HUD Sidebar ──────────────────────────────────────── -->
+  <aside id="hud-panel" class="hud-panel" aria-label="Churn mitigation telemetry">
+    <div class="hud-title">⚡ Churn Mitigation HUD</div>
+
+    <!-- Global counter — drives RFY query shift -->
+    <div class="flex items-center justify-between mb-1">
+      <span class="text-xs text-gray-500">Global Skips → RFY shift</span>
+      <span id="neg-counter" class="text-sm font-bold">0 / {{ negative_threshold }}</span>
+    </div>
+    <div class="progress-track" role="progressbar">
+      <div id="progress-fill" class="progress-fill" style="width:0%;"></div>
+    </div>
+
+    <!-- Status -->
+    <div id="status-badge" class="status-badge optimal">
+      <span id="status-dot" class="status-dot"></span>
+      <span id="status-text">Optimal Experience</span>
+    </div>
+
+    <!-- Penalty notice -->
+    <div id="penalty-notice" class="penalty-notice">
+      <strong>Active Penalty:</strong> Rocchio is pushing away from
+      <strong id="penalty-genre">–</strong> content.
+    </div>
+
+    <hr class="border-white/5 my-3" />
+
+    <!-- Per-genre breakdown — controls row visibility only -->
+    <div class="genre-hud-section">
+      <div class="genre-hud-title">Per-Genre Skips → Row Removed</div>
+      <div id="genre-hud-rows"></div>
+    </div>
+
+    <hr class="border-white/5 my-3" />
+
+    <!-- ── Positive signals section ──────────────────────── -->
+    <div id="positive-hud-section" class="positive-hud-section">
+      <div class="positive-hud-header">
+        <div class="positive-hud-title">✦ Positive Signals</div>
+        <span id="positive-total-badge" class="positive-hud-count-badge">0 plays</span>
+      </div>
+      <div id="positive-hud-rows"></div>
+
+      <!-- Positive attraction notice -->
+      <div id="positive-notice" class="positive-notice">
+        Feed is attracting toward
+        <strong id="positive-notice-genre">played content</strong>
+        (β = {{ beta }}).
+      </div>
+    </div>
+
+    <hr class="border-white/5 my-3" />
+
+    <!-- ── Live Profile Vector radar ────────────────────────── -->
+    <div id="vector-radar-section" class="vector-radar-section">
+      <div class="vector-radar-header">
+        <span class="vector-radar-title">🧭 Live Profile Vector</span>
+        <span id="vector-shift-badge" class="vector-shift-badge">shift 0%</span>
+      </div>
+      <div class="text-[10px] text-gray-600 mb-2">
+        See how each click bends your recommendation query vector.
+      </div>
+      <svg id="vector-radar-svg" viewBox="0 0 200 200" class="vector-radar-svg" aria-label="Profile vector radar chart"></svg>
+      <div class="vector-radar-legend">
+        <span class="legend-item"><i class="legend-swatch baseline"></i>Baseline Profile</span>
+        <span class="legend-item"><i class="legend-swatch rfy"></i>Live RFY Query</span>
+      </div>
+      <div id="vector-delta-callout" class="vector-delta-callout"></div>
+    </div>
+
+    <!-- ── Emerging interests section ───────────────────────── -->
+    <div id="emerging-hud-section" style="display:none; margin-top:4px;">
+      <hr class="border-white/5 my-3" />
+      <div class="genre-hud-section">
+        <div class="genre-hud-title" style="color:#34d399;">🌱 Emerging Interests</div>
+        <div class="text-[10px] text-gray-600 mb-2">Genres accumulating plays — not yet in rows</div>
+        <div id="emerging-hud-rows"></div>
+      </div>
+    </div>
+
+    <!-- Algo info -->
+    <div class="algo-info" style="margin-top:10px;">
+      <div class="mb-1">Query: <code id="algo-source">user_vector</code></div>
+      <div class="mb-1">
+        <code>V = norm(V_user + β·V<sub>play</sub> − α·V<sub>skip</sub>)</code>
+      </div>
+      <div>α=<code>{{ alpha }}</code> β=<code>{{ beta }}</code> drift=<code>{{ drift_rate }}</code></div>
+    </div>
+
+    <hr class="border-white/5 my-3" />
+
+    <div class="text-xs text-gray-700 leading-relaxed">
+      <strong class="text-gray-600">RFY row:</strong><br>
+      ⏭ Skip {{ negative_threshold }}× any genre → RFY visibly shifts<br>
+      &nbsp;&nbsp;(orthogonal rejection, strength={{ rejection_strength }}).<br>
+      ▶ Play → RFY attracted toward played content.<br>
+      <br>
+      <strong class="text-gray-600">Genre rows:</strong><br>
+      ⏭ Skip {{ genre_skip_threshold }}× same genre → that row disappears.<br>
+      ▶ Play {{ play_row_threshold }}× same genre → "Because you watched" row.<br>
+      <br>
+      λ={{ genre_blend_lambda }} genre + {{ "%.2f"|format(1-genre_blend_lambda) }} plot.<br>
+      All events persist until ↺ Reset Demo.
+    </div>
+  </aside>
+
+  <!-- ── Main Content ──────────────────────────────────────── -->
+  <main class="main-content" role="main" style="padding-top:28px;">
+
+    <!-- Loading skeleton -->
+    <div id="loading-skeleton" style="display:none;">
+      <div class="skeleton-row" style="margin-bottom:36px;">
+        <div style="width:160px;"><div class="skeleton" style="height:14px;margin-bottom:14px;width:40%;"></div>
+        <div class="skeleton" style="height:240px;"></div></div>
+        {% for _ in range(7) %}
+        <div class="skeleton-card"><div class="skeleton" style="height:240px;margin-top:28px;"></div></div>
+        {% endfor %}
+      </div>
+      {% for _ in range(2) %}
+      <div class="skeleton-row">
+        <div style="width:160px;"><div class="skeleton" style="height:14px;margin-bottom:14px;width:40%;"></div>
+        <div class="skeleton" style="height:240px;"></div></div>
+        {% for _ in range(7) %}
+        <div class="skeleton-card"><div class="skeleton" style="height:240px;margin-top:28px;"></div></div>
+        {% endfor %}
+      </div>
+      {% endfor %}
+    </div>
+
+    <!-- Trails container (filled by JS) -->
+    <div id="trails-container" class="trails-container"></div>
+
+    <!-- Footer -->
+    <div class="border-t border-white/5 pt-6 pb-6 text-center text-xs text-gray-700 px-12">
+      <p>Powered by
+        <strong class="text-gray-500">MongoDB Atlas Vector Search</strong> ·
+        <strong class="text-gray-500">Voyage AI voyage-4</strong> ·
+        <strong class="text-gray-500">Rocchio Negative Projection</strong>
+      </p>
+      <p class="mt-1">
+        Index: <code class="text-gray-600">vector_index_voyage4</code> ·
+        Dims: <code class="text-gray-600">1024</code> ·
+        Similarity: <code class="text-gray-600">cosine</code>
+      </p>
+    </div>
+  </main>
+</div>
+
+<!-- ============================================================
+     MOBILE HUD BAR
+     ============================================================ -->
+<div class="mobile-hud">
+  <span class="text-gray-500">Skips:</span>
+  <span id="mobile-neg-counter" class="font-bold">0 / {{ negative_threshold }}</span>
+  <div id="status-badge-mobile" class="status-badge optimal" style="padding:2px 8px;font-size:10px;margin-top:0;">
+    <span class="status-dot"></span>
+    <span id="mobile-status-text">Optimal</span>
+  </div>
+  <button onclick="openAdmin()" class="ml-auto text-xs text-gray-600 hover:text-gray-400">⚡ Admin</button>
+</div>
+
+<!-- ============================================================
+     ADMIN BOOST MODAL
+     ============================================================ -->
+<div id="admin-overlay" class="admin-modal-overlay" role="dialog" aria-modal="true" aria-label="Admin boost panel">
+  <div class="admin-modal">
+    <button id="admin-close" class="modal-close" aria-label="Close">&times;</button>
+
+    <h2>⚡ Marketing Admin</h2>
+    <p class="subtitle">Boost movies to guaranteed top-{{ max_boosted_slots }} slots in "Recommended For You"</p>
+
+    <!-- Movie search -->
+    <div class="admin-form">
+      <div class="form-group">
+        <label>Search Movie to Boost</label>
+        <input id="movie-search" type="text" class="form-control" placeholder="Type movie title…" autocomplete="off">
+        <div id="search-results" class="movie-search-results"></div>
+      </div>
+
+      <!-- Selected movie display -->
+      <div id="selected-movie" class="selected-movie">
+        <img src="" alt="" style="width:36px;height:54px;object-fit:cover;border-radius:4px;background:#2a2a2a;">
+        <div class="selected-movie-info">
+          <div class="selected-movie-title" id="selected-title">–</div>
+          <div style="font-size:11px;color:var(--text-muted);">Selected for boost</div>
+        </div>
+        <button id="clear-selection" class="selected-movie-clear" title="Clear selection">&times;</button>
+      </div>
+
+      <!-- Boost score -->
+      <div class="form-group">
+        <label>Boost Score (multiplier)</label>
+        <div class="boost-slider-row">
+          <input id="boost-score" type="range" class="boost-slider" min="1" max="5" step="0.1" value="2.0">
+          <span class="boost-score-display" id="boost-score-val">2.0×</span>
+        </div>
+      </div>
+
+      <!-- Label -->
+      <div class="form-group">
+        <label>Badge Label</label>
+        <select id="boost-label" class="form-control">
+          <option value="Hot">🔥 Hot</option>
+          <option value="Trending">📈 Trending</option>
+          <option value="Sponsored">📢 Sponsored</option>
+        </select>
+      </div>
+
+      <!-- Expiry -->
+      <div class="form-group">
+        <label>Auto-Expire After (hours) — leave blank for no expiry</label>
+        <input id="boost-expiry" type="number" class="form-control" min="1" max="720" placeholder="e.g. 24">
+      </div>
+
+      <button id="btn-boost" class="btn-boost">🚀 Boost Movie</button>
+    </div>
+
+    <hr class="section-divider">
+
+    <!-- Active boosts table -->
+    <div style="font-size:12px;font-weight:700;color:var(--text-muted);letter-spacing:0.08em;text-transform:uppercase;margin-bottom:8px;">
+      Active Boosts
+    </div>
+    <table class="boosts-table">
+      <thead>
+        <tr>
+          <th>Movie</th><th>Badge</th><th>Score</th><th>Action</th>
+        </tr>
+      </thead>
+      <tbody id="active-boosts-tbody">
+        <tr><td colspan="4" style="text-align:center;color:var(--text-muted);padding:14px;">Loading…</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<!-- ============================================================
+     JS
+     ============================================================ -->
+<script src="/static/js/app.js"></script>
+
+</body>
+</html>
